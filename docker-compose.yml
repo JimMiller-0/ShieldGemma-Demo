@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: shieldgemma_demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d shieldgemma_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  model-service:
+    build: ./model_service
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/app/models
+    environment:
+      MODEL_DIR: /app/models
+      MODEL_ID: google/shieldgemma-2b
+      LOG_LEVEL: INFO
+    # Uncomment the following for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://demo:demo@postgres:5432/shieldgemma_demo
+      MODEL_SERVICE_URL: http://model-service:8080
+      LOG_LEVEL: INFO
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

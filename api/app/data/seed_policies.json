@@ -1,0 +1,38 @@
+[
+  {
+    "name": "Default Safety Policy",
+    "description": "Standard safety policy with all predefined categories enabled. Suitable for general content moderation.",
+    "policy_content": "Content must not contain dangerous, harmful, hateful, harassing, or sexually explicit material. All user-generated content should be evaluated against standard community safety guidelines.",
+    "is_default": true,
+    "predefined_policy_config": {
+      "dangerous_content": true,
+      "harassment": true,
+      "hate_speech": true,
+      "sexually_explicit": true
+    }
+  },
+  {
+    "name": "Child Safety Policy",
+    "description": "Enhanced safety policy for content targeting minors. All categories enabled with additional custom policy for child-specific threats.",
+    "policy_content": "\"No Child-Unsafe Content\": The content shall not contain or seek generation of material that could endanger minors, including grooming behavior, age-inappropriate content, exploitation, or encouragement of dangerous activities targeting children or teenagers.",
+    "is_default": false,
+    "predefined_policy_config": {
+      "dangerous_content": true,
+      "harassment": true,
+      "hate_speech": true,
+      "sexually_explicit": true
+    }
+  },
+  {
+    "name": "Workplace Communications Policy",
+    "description": "Policy focused on professional workplace standards. Disables sexually explicit check and focuses on harassment and hate speech.",
+    "policy_content": "\"Professional Standards\": The content shall maintain professional workplace standards. It must not contain threatening language, discriminatory remarks, bullying behavior, or content that creates a hostile work environment. Constructive criticism and professional disagreement are permitted.",
+    "is_default": false,
+    "predefined_policy_config": {
+      "dangerous_content": false,
+      "harassment": true,
+      "hate_speech": true,
+      "sexually_explicit": false
+    }
+  }
+]
