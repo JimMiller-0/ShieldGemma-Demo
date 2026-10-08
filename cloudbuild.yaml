@@ -1,0 +1,197 @@
+# ==============================================================================
+# Google Cloud Build Pipeline for ShieldGemma Demo
+#
+# Usage:
+#   gcloud builds submit --config=cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_USE_GPU=false,_REPOSITORY=shadowai-workloads
+# ==============================================================================
+
+substitutions:
+  _REGION: us-central1
+  _REPOSITORY: shadowai-workloads
+  _USE_GPU: "false"
+  _HF_TOKEN: ""
+  _DATABASE_URL: ""
+
+steps:
+  # ----------------------------------------------------------------------------
+  # Step 1: Build Docker Images in Parallel
+  # ----------------------------------------------------------------------------
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-model-service"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/model-service:latest"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/model-service:${BUILD_ID}"
+      - "./model_service"
+    waitFor: ["-"]
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-api"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/api:latest"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/api:${BUILD_ID}"
+      - "./api"
+    waitFor: ["-"]
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-frontend"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/frontend:latest"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/frontend:${BUILD_ID}"
+      - "./frontend"
+    waitFor: ["-"]
+
+  # ----------------------------------------------------------------------------
+  # Step 2: Push Images to Artifact Registry
+  # ----------------------------------------------------------------------------
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-model-service"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/model-service"
+    waitFor: ["build-model-service"]
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-api"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/api"
+    waitFor: ["build-api"]
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-frontend"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/frontend"
+    waitFor: ["build-frontend"]
+
+  # ----------------------------------------------------------------------------
+  # Step 3: Deploy Model Service (CPU by default or GPU)
+  # ----------------------------------------------------------------------------
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-model-service"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        EXTRA_ARGS=()
+        if [ "${_USE_GPU}" = "true" ]; then
+          echo "Deploying model-service with GPU (NVIDIA L4)..."
+          EXTRA_ARGS+=(
+            "--cpu=4"
+            "--memory=16Gi"
+            "--gpu=1"
+            "--gpu-type=nvidia-l4"
+            "--concurrency=16"
+            "--set-env-vars=COMPUTE_DEVICE=cuda,USE_VLLM=true,VLLM_USE_ASYNC_ENGINE=true,AUTO_DOWNLOAD_MODEL=true${_HF_TOKEN:+,HF_TOKEN=${_HF_TOKEN}}"
+          )
+        else
+          echo "Deploying model-service on CPU-backed instance (4 vCPU, 16Gi RAM)..."
+          EXTRA_ARGS+=(
+            "--cpu=4"
+            "--memory=16Gi"
+            "--concurrency=2"
+            "--set-env-vars=COMPUTE_DEVICE=cpu,USE_VLLM=false,AUTO_DOWNLOAD_MODEL=true${_HF_TOKEN:+,HF_TOKEN=${_HF_TOKEN}}"
+          )
+        fi
+
+        gcloud run deploy model-service \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/model-service:${BUILD_ID}" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --allow-unauthenticated \
+          --timeout=300 \
+          --port=8080 \
+          --no-cpu-throttling \
+          "$${EXTRA_ARGS[@]}"
+    waitFor: ["push-model-service"]
+
+  # ----------------------------------------------------------------------------
+  # Step 4: Deploy API Service
+  # ----------------------------------------------------------------------------
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-api"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        MODEL_URL=$$(gcloud run services describe model-service \
+          --region="${_REGION}" \
+          --format="value(status.url)")
+
+        ENV_VARS="MODEL_SERVICE_URL=$${MODEL_URL},LOG_LEVEL=INFO"
+        if [ -n "${_DATABASE_URL}" ]; then
+          ENV_VARS="$${ENV_VARS},DATABASE_URL=${_DATABASE_URL}"
+        fi
+
+        gcloud run deploy api \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/api:${BUILD_ID}" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --allow-unauthenticated \
+          --port=8000 \
+          --cpu=1 \
+          --memory=1Gi \
+          --set-env-vars="$${ENV_VARS}"
+    waitFor: ["deploy-model-service", "push-api"]
+
+  # ----------------------------------------------------------------------------
+  # Step 5: Deploy Frontend Service
+  # ----------------------------------------------------------------------------
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "deploy-frontend"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        API_URL=$$(gcloud run services describe api \
+          --region="${_REGION}" \
+          --format="value(status.url)")
+
+        gcloud run deploy frontend \
+          --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/frontend:${BUILD_ID}" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --allow-unauthenticated \
+          --port=8080 \
+          --cpu=1 \
+          --memory=512Mi \
+          --set-env-vars="API_URL=$${API_URL}"
+
+        FRONTEND_URL=$$(gcloud run services describe frontend \
+          --region="${_REGION}" \
+          --format="value(status.url)")
+
+        echo "=========================================================="
+        echo "Deployment Complete!"
+        echo "Frontend URL:  $${FRONTEND_URL}"
+        echo "API URL:       $${API_URL}"
+        echo "Model URL:     $$(gcloud run services describe model-service --region="${_REGION}" --format="value(status.url)")"
+        echo "=========================================================="
+    waitFor: ["deploy-api", "push-frontend"]
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/model-service:latest"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/model-service:${BUILD_ID}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/api:latest"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/api:${BUILD_ID}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/frontend:latest"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/frontend:${BUILD_ID}"
+
+options:
+  machineType: "E2_HIGHCPU_8"
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s

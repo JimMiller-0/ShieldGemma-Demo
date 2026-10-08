@@ -1,5 +1,6 @@
 import time
 
+from fastapi import HTTPException
 import httpx
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,12 +99,20 @@ async def analyze_safety(
     # 3. Call model service
     model_url = f"{settings.model_service_url}/v1/inference/safety"
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(model_url, json={
-            "model_id": request.model_id,
-            "prompts": safety_prompts,
-        })
-        resp.raise_for_status()
-        model_response = resp.json()
+        try:
+            resp = await client.post(model_url, json={
+                "model_id": request.model_id,
+                "prompts": safety_prompts,
+            })
+            resp.raise_for_status()
+            model_response = resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 503:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Model is still initializing in the background. Please wait a moment and try again.",
+                )
+            raise
 
     # 4. Process response
     safety_categories: list[SafetyCategory] = []

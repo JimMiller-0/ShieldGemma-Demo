@@ -7,9 +7,10 @@ class Settings:
     database_url: str = field(
         default_factory=lambda: os.environ.get(
             "DATABASE_URL",
-            "postgresql+asyncpg://demo:demo@localhost:5432/shieldgemma_demo",
+            "sqlite+aiosqlite:////app/data/shieldgemma.db",
         )
     )
+
     model_service_url: str = field(
         default_factory=lambda: os.environ.get("MODEL_SERVICE_URL", "http://localhost:8080")
     )

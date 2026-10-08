@@ -1,0 +1,53 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      use_gpu:
+        description: "Deploy model service with GPU (true/false)"
+        required: false
+        default: "false"
+
+env:
+  PROJECT_ID: shadowai-customer-trials-5
+  REGION: us-central1
+  REPOSITORY: shadowai-workloads
+
+jobs:
+  deploy:
+    name: Build & Deploy to Cloud Run
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          # Supports Workload Identity Provider or service account key secret
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & Deploy via Cloud Build
+        run: |
+          USE_GPU="${{ github.event.inputs.use_gpu || 'false' }}"
+          gcloud builds submit \
+            --config=cloudbuild.yaml \
+            --substitutions=_REGION=${{ env.REGION }},_REPOSITORY=${{ env.REPOSITORY }},_USE_GPU=${USE_GPU} \
+            --project=${{ env.PROJECT_ID }}

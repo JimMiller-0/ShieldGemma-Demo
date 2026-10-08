@@ -11,15 +11,14 @@ RUN npm run build
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# SPA routing support
-RUN echo 'server { \
-    listen 3000; \
-    root /usr/share/nginx/html; \
-    index index.html; \
-    location / { try_files $uri $uri/ /index.html; } \
-    location /api { proxy_pass http://api:8000; } \
-}' > /etc/nginx/conf.d/default.conf
+RUN mkdir -p /etc/nginx/templates
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
-EXPOSE 3000
+ENV PORT=3000
+ENV API_URL=http://api:8000
 
-CMD ["nginx", "-g", "daemon off;"]
+EXPOSE 3000 8080
+
+ENTRYPOINT ["/docker-entrypoint.sh"]

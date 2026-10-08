@@ -27,6 +27,9 @@ async def safety_inference(request: SafetyRequest, req: Request) -> SafetyRespon
     start = time.perf_counter()
     try:
         raw_results = await engine.analyze_batch(prompts, max_new_tokens=request.max_new_tokens)
+    except ValueError as e:
+        logger.warning("Prompt validation error during inference: {}", e)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Safety inference failed for model {}", request.model_id)
         raise HTTPException(status_code=500, detail=f"Inference error: {e}")

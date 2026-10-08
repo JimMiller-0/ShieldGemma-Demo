@@ -33,11 +33,40 @@ class Settings:
     max_payload_size: int = 10240
     log_level: str = field(default_factory=lambda: os.environ.get("LOG_LEVEL", "INFO"))
     port: int = field(default_factory=lambda: int(os.environ.get("PORT", "8080")))
+    vllm_gpu_memory_utilization: float = field(
+        default_factory=lambda: float(os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.9"))
+    )
+    max_model_len: int = field(
+        default_factory=lambda: int(os.environ.get("MAX_MODEL_LEN", "4096"))
+    )
+    vllm_max_num_seqs: int = field(
+        default_factory=lambda: int(os.environ.get("VLLM_MAX_NUM_SEQS", "64"))
+    )
+    vllm_enable_prefix_caching: bool = field(
+        default_factory=lambda: os.environ.get("VLLM_ENABLE_PREFIX_CACHING", "true").lower()
+        in ("1", "true", "yes", "on")
+    )
+    vllm_use_async_engine: bool = field(
+        default_factory=lambda: os.environ.get("VLLM_USE_ASYNC_ENGINE", "true").lower()
+        in ("1", "true", "yes", "on")
+    )
+    use_vllm: bool = field(
+        default_factory=lambda: os.environ.get("USE_VLLM", "true").lower()
+        in ("1", "true", "yes", "on")
+    )
+
+    def get_model_path(self, model_id: Optional[str] = None) -> Path:
+        target_id = model_id or self.model_id
+        safe_id = target_id.replace("/", "_--_")
+        return self.model_dir / safe_id
+
+    def get_registry_entry(self, model_id: Optional[str] = None):
+        """Optional model registry lookup hook for per-model overrides."""
+        return None
 
     @property
     def model_path(self) -> Path:
-        safe_id = self.model_id.replace("/", "_--_")
-        return self.model_dir / safe_id
+        return self.get_model_path(self.model_id)
 
 
 settings = Settings()

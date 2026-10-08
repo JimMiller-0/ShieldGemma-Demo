@@ -119,6 +119,204 @@ For NVIDIA GPU acceleration, uncomment the `deploy` section in `docker-compose.y
 
 For Apple Silicon (MPS), set `COMPUTE_DEVICE=mps` in the model service environment. Note that float32 is used on MPS to avoid precision issues.
 
+## Deploying to Google Cloud Run
+
+This project can be deployed to **Google Cloud Run** using either **CPU-backed instances** (recommended when GPU quota is unavailable) or **NVIDIA GPU instances** (e.g. NVIDIA L4).
+
+### Architecture on Cloud Run
+
+```
+┌────────────────────────────────┐
+│       Frontend (Cloud Run)     │
+│   https://frontend-...run.app  │ (Port 8080, Nginx reverse proxy)
+└───────────────┬────────────────┘
+                │ /api/*
+                ▼
+┌────────────────────────────────┐
+│          API (Cloud Run)       │
+│     https://api-...run.app     │ (Port 8000, FastAPI + PostgreSQL)
+└───────────────┬────────────────┘
+                │ /v1/inference/safety
+                ▼
+┌────────────────────────────────┐
+│    Model Service (Cloud Run)   │
+│ https://model-service-...run.app│ (Port 8080, ShieldGemma-2B)
+└────────────────────────────────┘
+```
+
+### Option A: One-Command Deployment Script
+
+The included [`deploy/deploy-all.sh`](file:///usr/local/google/home/jimmymiller/ShieldGemma-Demo/deploy/deploy-all.sh) builds all three services, pushes them to Artifact Registry, deploys them to Cloud Run, and automatically wires service URLs:
+
+```bash
+# 1. Ensure gcloud is configured with your project
+gcloud config set project shadowai-customer-trials-5
+
+# 2. Deploy all services using CPU-backed instances
+./deploy/deploy-all.sh --cpu
+
+# Or deploy with NVIDIA L4 GPU acceleration (if quota is available):
+# ./deploy/deploy-all.sh --gpu
+```
+
+Optional flags:
+- `--hf-token <TOKEN>`: Hugging Face token to auto-download gated ShieldGemma-2B weights on first startup.
+- `--gcs-bucket <BUCKET>`: Cloud Storage bucket containing `./models/` to mount directly via Cloud Run GCS volume mount.
+- `--db-url <POSTGRES_URL>`: Managed PostgreSQL connection string (Cloud SQL / Neon / Supabase).
+
+---
+
+### Option B: Continuous Deployment with Cloud Build
+
+Submit the continuous deployment pipeline to Google Cloud Build:
+
+```bash
+gcloud builds submit --config=cloudbuild.yaml \
+  --substitutions=_REGION=us-central1,_REPOSITORY=shadowai-workloads,_USE_GPU=false
+```
+
+To set up automatic git triggers on every push to `main`:
+1. Navigate to **Cloud Build > Triggers** in the Google Cloud Console.
+2. Connect your repository.
+3. Select **Cloud Build configuration file** and set the path to `cloudbuild.yaml`.
+
+A GitHub Actions workflow is also provided at [`.github/workflows/deploy.yml`](file:///usr/local/google/home/jimmymiller/ShieldGemma-Demo/.github/workflows/deploy.yml).
+
+---
+
+### Option C: Manual Step-by-Step Deployment
+
+If you prefer deploying each service manually using `gcloud`, follow these steps:
+
+#### 1. Setup Environment Variables
+
+```bash
+export PROJECT_ID=$(gcloud config get-value project)
+export REGION="us-central1"
+export REPOSITORY="shadowai-workloads"
+export REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}"
+
+# Enable required Google Cloud APIs
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
+```
+
+#### 2. Deploy `model-service`
+
+##### CPU-Backed Deployment (Default / No GPU Quota)
+CPU-backed instances run ShieldGemma in scoring mode using PyTorch (`float32`):
+
+```bash
+# Build and push model service
+gcloud builds submit model_service --tag="${REGISTRY}/model-service:latest"
+
+# Deploy to Cloud Run (4 vCPUs, 16Gi RAM, CPU mode)
+gcloud run deploy model-service \
+  --image="${REGISTRY}/model-service:latest" \
+  --region="${REGION}" \
+  --platform=managed \
+  --allow-unauthenticated \
+  --port=8080 \
+  --cpu=4 \
+  --memory=16Gi \
+  --concurrency=2 \
+  --timeout=300 \
+  --no-cpu-throttling \
+  --set-env-vars="COMPUTE_DEVICE=cpu,USE_VLLM=false,AUTO_DOWNLOAD_MODEL=true"
+```
+
+##### GPU-Backed Deployment (NVIDIA L4)
+If your project has GPU quota on Cloud Run:
+
+```bash
+gcloud run deploy model-service \
+  --image="${REGISTRY}/model-service:latest" \
+  --region="${REGION}" \
+  --platform=managed \
+  --allow-unauthenticated \
+  --port=8080 \
+  --cpu=4 \
+  --memory=16Gi \
+  --gpu=1 \
+  --gpu-type=nvidia-l4 \
+  --concurrency=16 \
+  --timeout=300 \
+  --no-cpu-throttling \
+  --set-env-vars="COMPUTE_DEVICE=cuda,USE_VLLM=true,AUTO_DOWNLOAD_MODEL=true"
+```
+
+Capture the deployed model service URL:
+```bash
+export MODEL_SERVICE_URL=$(gcloud run services describe model-service \
+  --region="${REGION}" --format="value(status.url)")
+echo "Model Service URL: ${MODEL_SERVICE_URL}"
+```
+
+#### 3. Deploy `api`
+
+```bash
+# Build and push API service
+gcloud builds submit api --tag="${REGISTRY}/api:latest"
+
+# Deploy API service pointing to model-service
+gcloud run deploy api \
+  --image="${REGISTRY}/api:latest" \
+  --region="${REGION}" \
+  --platform=managed \
+  --allow-unauthenticated \
+  --port=8000 \
+  --cpu=1 \
+  --memory=1Gi \
+  --set-env-vars="MODEL_SERVICE_URL=${MODEL_SERVICE_URL},LOG_LEVEL=INFO"
+```
+
+Capture the deployed API service URL:
+```bash
+export API_URL=$(gcloud run services describe api \
+  --region="${REGION}" --format="value(status.url)")
+echo "API URL: ${API_URL}"
+```
+
+#### 4. Deploy `frontend`
+
+The frontend container automatically proxies `/api/*` requests to `${API_URL}` over HTTPS:
+
+```bash
+# Build and push frontend service
+gcloud builds submit frontend --tag="${REGISTRY}/frontend:latest"
+
+# Deploy frontend pointing to the API service
+gcloud run deploy frontend \
+  --image="${REGISTRY}/frontend:latest" \
+  --region="${REGION}" \
+  --platform=managed \
+  --allow-unauthenticated \
+  --port=8080 \
+  --cpu=1 \
+  --memory=512Mi \
+  --set-env-vars="API_URL=${API_URL}"
+
+export FRONTEND_URL=$(gcloud run services describe frontend \
+  --region="${REGION}" --format="value(status.url)")
+echo "Frontend UI: ${FRONTEND_URL}"
+```
+
+---
+
+### Cloud Run Configuration Summary
+
+| Setting | CPU-Backed Instance (Default) | GPU-Backed Instance |
+|---|---|---|
+| **Engine** | `LocalSafetyEngine` (PyTorch CausalLM) | `VLLMSafetyEngine` (vLLM continuous batching) |
+| **`USE_VLLM`** | `false` | `true` |
+| **`COMPUTE_DEVICE`** | `cpu` | `cuda` |
+| **vCPUs** | `4` | `4` |
+| **Memory** | `16Gi` | `16Gi` |
+| **GPU Flag** | *(none)* | `--gpu 1 --gpu-type nvidia-l4` |
+| **Concurrency** | `2` | `16` |
+| **CPU Throttling** | `--no-cpu-throttling` | `--no-cpu-throttling` |
+| **Timeout** | `300s` | `300s` |
+
+
 ## API Endpoints
 
 ### Safety Analysis

@@ -13,7 +13,7 @@ import {
   CircularProgress,
   Alert,
   Chip,
-  Grid,
+  Grid2 as Grid,
   Divider,
   List,
   ListItem,

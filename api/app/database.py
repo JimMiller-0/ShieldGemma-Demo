@@ -3,14 +3,22 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from api.app.config import settings
 
+is_sqlite = settings.database_url.startswith("sqlite")
+
+engine_kwargs = {"echo": False}
+if not is_sqlite:
+    engine_kwargs.update({
+        "pool_size": 5,
+        "max_overflow": 2,
+        "pool_pre_ping": True,
+        "pool_recycle": 3600,
+    })
+
 async_engine = create_async_engine(
     settings.database_url,
-    echo=False,
-    pool_size=5,
-    max_overflow=2,
-    pool_pre_ping=True,
-    pool_recycle=3600,
+    **engine_kwargs,
 )
+
 
 AsyncSessionLocal = sessionmaker(
     bind=async_engine,

@@ -24,10 +24,17 @@ logger.add(
 async def lifespan(_app: FastAPI):
     logger.info("API service starting...")
 
-    # Create tables (for development; in production use alembic migrate)
+    # Ensure directory exists for SQLite file databases
+    if settings.database_url.startswith("sqlite"):
+        from pathlib import Path
+        db_path = settings.database_url.replace("sqlite+aiosqlite:////", "/")
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # Create tables (for development/PoC; in production use alembic migrate)
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables ensured")
+
 
     # Seed default policies
     async with AsyncSessionLocal() as db:
